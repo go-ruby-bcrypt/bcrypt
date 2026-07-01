@@ -49,7 +49,9 @@ func Create(secret []byte, opts ...CreateOption) (*Password, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewPassword(h)
+	// h was produced from a freshly generated salt, so it is a well-formed hash
+	// by construction; parse it without re-validating.
+	return parseHash(h), nil
 }
 
 // CreateString is Create for a string secret.
@@ -64,6 +66,11 @@ func NewPassword(rawHash string) (*Password, error) {
 	if !ValidHash(rawHash) {
 		return nil, ErrInvalidHash
 	}
+	return parseHash(rawHash), nil
+}
+
+// parseHash builds a *Password from a hash already known to be well-formed.
+func parseHash(rawHash string) *Password {
 	v, cost, salt, checksum := splitHash(rawHash)
 	return &Password{
 		hash:     rawHash,
@@ -71,7 +78,7 @@ func NewPassword(rawHash string) (*Password, error) {
 		cost:     cost,
 		salt:     salt,
 		checksum: checksum,
-	}, nil
+	}
 }
 
 // ValidHash reports whether h matches the bcrypt hash grammar

@@ -94,22 +94,21 @@ func bcBase64Decode(src []byte) ([]byte, error) {
 
 // expensiveBlowfishSetup performs the bcrypt key schedule: cost-many rounds of
 // alternating key/salt expansion over a Blowfish cipher, byte-for-byte the same
-// as golang.org/x/crypto/bcrypt (including the trailing-NUL key quirk).
-func expensiveBlowfishSetup(key []byte, cost uint32, csalt []byte) (*blowfish.Cipher, error) {
+// as golang.org/x/crypto/bcrypt (including the trailing-NUL key quirk). csalt
+// must be the 16 raw salt bytes; the key is never empty (the appended NUL makes
+// it length >= 1), so NewSaltedCipher cannot error here.
+func expensiveBlowfishSetup(key []byte, cost uint32, csalt []byte) *blowfish.Cipher {
 	// Bug compatibility with C bcrypt: the trailing NUL of the key string is
 	// used during expansion.
 	ckey := append(key[:len(key):len(key)], 0)
 
-	c, err := blowfish.NewSaltedCipher(ckey, csalt)
-	if err != nil {
-		return nil, err
-	}
+	c, _ := blowfish.NewSaltedCipher(ckey, csalt)
 	rounds := uint64(1) << cost
 	for i := uint64(0); i < rounds; i++ {
 		blowfish.ExpandKey(ckey, c)
 		blowfish.ExpandKey(csalt, c)
 	}
-	return c, nil
+	return c
 }
 
 // rawHash computes the 31-char bcrypt checksum for a (already truncated) secret,
@@ -118,12 +117,7 @@ func rawHash(secret []byte, cost int, csalt []byte) []byte {
 	cipherData := make([]byte, len(magicCipherData))
 	copy(cipherData, magicCipherData)
 
-	c, err := expensiveBlowfishSetup(secret, uint32(cost), csalt)
-	if err != nil {
-		// NewSaltedCipher only rejects an empty salt; callers pass a 16-byte
-		// salt so this is unreachable in practice, but stay defensive.
-		return nil
-	}
+	c := expensiveBlowfishSetup(secret, uint32(cost), csalt)
 	for i := 0; i < 24; i += 8 {
 		for j := 0; j < 64; j++ {
 			c.Encrypt(cipherData[i:i+8], cipherData[i:i+8])
@@ -172,17 +166,11 @@ func HashSecret(secret []byte, salt string) (string, error) {
 	if len(secret) > MaxSecretBytesize {
 		secret = secret[:MaxSecretBytesize]
 	}
-	// A valid salt is "$2a$NN$<22+ chars>"; the encoded salt is the 22 chars
-	// following the third '$'. Decode exactly those 22 chars (16 raw bytes).
-	enc := salt[7 : 7+22]
-	csalt, err := bcBase64Decode([]byte(enc))
-	if err != nil {
-		return "", ErrInvalidSalt
-	}
-	cost, err := strconv.Atoi(salt[4:6])
-	if err != nil {
-		return "", ErrInvalidSalt
-	}
+	// ValidSalt guaranteed the shape "$vv$NN$<22+ radix-64 chars>": salt[4:6] is
+	// two digits and salt[7:29] is 22 chars from the bcrypt alphabet, so neither
+	// the cost parse nor the salt decode below can fail.
+	csalt, _ := bcBase64Decode([]byte(salt[7 : 7+22]))
+	cost, _ := strconv.Atoi(salt[4:6])
 	checksum := rawHash(secret, cost, csalt)
 	// Reassemble with the salt prefix through the encoded salt (29 chars).
 	return salt[:29] + string(checksum), nil
